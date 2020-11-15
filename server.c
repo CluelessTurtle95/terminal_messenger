@@ -26,6 +26,8 @@ void * newUserHandler(void * data);
 _Bool remove_from_session(char * sessid, char * username);
 _Bool logout(UserData * data);
 
+void multicast(Message * m, char * source, char * sessid);
+
 //Prepare Global Login,Session DB
 HashTable * loginDB = NULL;
 HashTable * sessionDB = NULL;
@@ -92,6 +94,9 @@ int main(int argc, char *argv[])
     sessionDB = hash_table_init(10);
     
     signal(SIGINT, exit_server_handler);
+    signal(SIGTERM, exit_server_handler);
+    signal(SIGABRT, exit_server_handler);
+    
     
     // start listening
     while(true)
@@ -118,6 +123,9 @@ int main(int argc, char *argv[])
         data->connfd = connfd;
         // No username yet;
         data->username = NULL;
+        // No active sessions yet
+        data->sessions = NULL;
+        
         pthread_create( &(data->p), NULL, newUserHandler, (void *)data);
         
         
@@ -129,9 +137,12 @@ int main(int argc, char *argv[])
 _Bool logout(UserData * data){
     // remove from table
     _Bool removeSess = true;
-    if(strcmp(data->sessid, "") != 0)
-        removeSess = remove_from_session(data->sessid, data->username);
-    
+    while(data->sessions != NULL){
+        removeSess = remove_from_session(data->sessions->sessid, data->username);
+        SessionList * temp = data->sessions;
+        data->sessions = data->sessions->next;
+        free(temp);
+    }
     pthread_mutex_lock(&loginDBMutex);
     _Bool removeLogin = remove_item(data->username, loginDB);
     pthread_mutex_unlock(&loginDBMutex);
@@ -141,6 +152,7 @@ _Bool logout(UserData * data){
     return removeSess && removeLogin ;
 }
 
+// only edits sessionDB
 _Bool remove_from_session(char * sessid, char * username){
     _Bool done = false;
     
@@ -183,6 +195,22 @@ _Bool remove_from_session(char * sessid, char * username){
     
     pthread_mutex_unlock(&sessionDBMutex);
     return done;
+}
+
+// Send message to all users in a session
+void multicast(Message * m, char * source, char * sessid){
+    pthread_mutex_lock(&sessionDBMutex);
+    SessionData * sessData = find_item(sessid, sessionDB);
+    UserList * head = sessData->connected_users;
+    while(head != NULL){
+        pthread_mutex_unlock(&loginDBMutex);
+        int temp_sock = ((UserData *)find_item(head->username, loginDB))->connfd;
+        pthread_mutex_unlock(&loginDBMutex);
+
+        text_message_from_source(temp_sock, MESSAGE, m->data, source);
+        head = head->next;
+    }
+    pthread_mutex_unlock(&sessionDBMutex);    
 }
 
 void handleUserRequests( UserData * data){
@@ -245,21 +273,16 @@ void handleUserRequests( UserData * data){
         else if (m->type == MESSAGE){
             printf("User %s Sent : %s\n", data->username, m->data);
             
-            if(strcmp(data->sessid, "") != 0){
-                pthread_mutex_lock(&sessionDBMutex);
-                SessionData * sessData = find_item(data->sessid, sessionDB);
-                UserList * head = sessData->connected_users;
-                while(head != NULL){
-//                    if(strcmp(head->username, data->username) != 0){
-                        pthread_mutex_unlock(&loginDBMutex);
-                        int temp_sock = ((UserData *)find_item(head->username, loginDB))->connfd;
-                        pthread_mutex_unlock(&loginDBMutex);
-
-                        text_message_from_source(temp_sock, MESSAGE, m->data, data->username);
-//                    }
-                    head = head->next;
-                }
-                pthread_mutex_unlock(&sessionDBMutex);
+            SessionList * temp = data->sessions;
+            while(temp != NULL){
+                // Modify message to reflect session
+                char * username_session = (char *)malloc(MAX);
+                sprintf(username_session, "%s#%s", data->username, temp->sessid);
+                
+                // Send
+                multicast(m, username_session, temp->sessid);
+                temp = temp->next;
+                free(username_session);
             }
         } 
         else if(m->type == LOGIN){
@@ -312,60 +335,119 @@ void handleUserRequests( UserData * data){
             
         } 
         else if(m->type == JOIN){
-            if(strcmp(data->sessid, "") != 0){
-                text_message(data->connfd, JN_NAK, "leave_first");
+            pthread_mutex_lock(&sessionDBMutex);
+            SessionData * sessData = find_item(m->data, sessionDB);
+            
+            if(sessData == NULL){
+                // session doesn't exist, send nack
+                empty_message(data->connfd, JN_NAK);
             }
             else{
-                pthread_mutex_lock(&sessionDBMutex);
-                SessionData * sessData = find_item(m->data, sessionDB);
+                _Bool already_exists = false;
 
+                // exists, Join
+                if(sessData->connected_users == NULL){
+                    // No users
+                    sessData->connected_users = (UserList *)malloc(sizeof(UserList));
+                    sessData->connected_users->next = NULL;
+                    sessData->connected_users->username = (char *)malloc(MAX);
+                    strcpy(sessData->connected_users->username , data->username);
 
-                if(sessData == NULL){
-                    // session doesn't exist, send nack
-                    empty_message(data->connfd, JN_NAK);
                 }
                 else{
-                    // exists, Join
-                    if(sessData->connected_users == NULL){
-                        // No users
-                        sessData->connected_users = (UserList *)malloc(sizeof(UserList));
-                        sessData->connected_users->next = NULL;
-                        sessData->connected_users->username = (char *)malloc(MAX);
-                        strcpy(sessData->connected_users->username , m->source);
+                    UserList * head = sessData->connected_users;
 
-                    }
-                    else{
-                        UserList * head = sessData->connected_users;
-
-                        while(head->next != NULL){
-                            head = head->next;
+                    while(head->next != NULL){
+                        if(strcmp(head->username, data->username) == 0){
+                            // user already exists in session
+                            already_exists = true;
                         }
+                        head = head->next;
+                    }
 
+                    if(strcmp(head->username, data->username) == 0){
+                            // user already exists in session
+                            already_exists = true;
+                    }
+                    if(!already_exists){
                         // Head points to last element now
                         head->next = (UserList *)malloc(sizeof(UserList));
                         head->next->next = NULL;
                         head->next->username = (char *)malloc(MAX);
-                        strcpy(head->next->username, m->source);
-                        printf("saved :%s\n", m->source);
+                        strcpy(head->next->username, data->username);
                     }
+                }
 
+                if(!already_exists){
                     // set user session
-                    strcpy(data->sessid, m->data);
+                    SessionList * temp = (SessionList *)malloc(sizeof(SessionList));
+                    temp->next = NULL;
+                    strcpy(temp->sessid, m->data);
+                    SessionList * head = data->sessions;
+                    SessionList * prev = NULL;
+                    while(head != NULL){
 
+                        prev = head;
+                        head = head->next;
+
+                    }
+                    if(prev == NULL){
+                        // first element
+                        data->sessions = temp;
+                    }
+                    else{
+                        prev->next = temp;
+                    }
                     // Send Ack
                     empty_message(data->connfd, JN_ACK);
                 }
-                pthread_mutex_unlock(&sessionDBMutex);
+                else {
+                    text_message(data->connfd, JN_NAK, "already_joined");
+                }
             }
+            pthread_mutex_unlock(&sessionDBMutex);
+            
         }
         else if(m->type == LEAVE_SESS){
-            if(strcmp(data->sessid, "") == 0){
+            if(data->sessions == NULL){
                 // Not in session
+                empty_message(data->connfd, LEAVE_NAK);
             }
             else{
-                remove_from_session(data->sessid, data->username);
+                // check if valid session
+                SessionList * head = data->sessions;
+                SessionList * prev = NULL;
+                _Bool isvalid = false;
                 
-                strcpy(data->sessid, "");
+                while(head != NULL){
+                    if(strcmp(head->sessid, m->data) == 0){
+                        // found session , valid
+                        isvalid = true;
+                        break;
+                    }
+                    prev = head;
+                    head = head->next;
+
+                }
+                if(!isvalid){
+                    // send nack
+                    empty_message(data->connfd, LEAVE_NAK);
+                    
+                }
+                else{
+                    // remove from sessions
+                    remove_from_session(head->sessid, data->username);
+                    
+                    // remove from userdata
+                    if(prev != NULL)
+                        prev->next = head->next;
+                    else
+                        data->sessions = NULL;
+                    free(head);
+                    
+                    // send ack
+                    empty_message(data->connfd, LEAVE_ACK);
+                }
             }
         }
         else {
@@ -376,7 +458,6 @@ void handleUserRequests( UserData * data){
     }
 }
 
-
 // All new users begin here
 void * newUserHandler(void * data){
     UserData * d = (UserData *)data;
@@ -384,8 +465,8 @@ void * newUserHandler(void * data){
     if(d->username != NULL){
         // valid user
         
-//        printf("Now Logged In : \n");
-//        print_table(loginDB);
+        //printf("Now Logged In : \n");
+        //print_table(loginDB);
         
         handleUserRequests(d);
     } 

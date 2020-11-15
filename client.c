@@ -44,6 +44,8 @@ pthread_cond_t conrolCond = PTHREAD_COND_INITIALIZER;
 int currentOutputX = 0, currentOutputY = 0;
 int currentFieldX = 0, currentFieldY = 0;
 
+
+
 void addToMsgList(Message *m , MessageList *l){
     
     while(l->next != NULL){
@@ -161,7 +163,16 @@ void * message_receiver(void * sockfd_ptr){
             pthread_mutex_lock(&controlMutex);
             if(received->type == EXIT){
                 // final message, server exitted
+                int currY, currX;
+                getyx(stdscr, currY, currX);
+
+                // switch to output
+                move(currentOutputY, currentFieldX);
                 printw("Server Exited!\n");
+                getyx(stdscr, currentOutputY, currentOutputX);
+                // switch back
+                move(currY, currX);
+                
                 forceLogout = true;
             }
             
@@ -225,10 +236,33 @@ int main()
             if(ch == ERR){
                 // Not responded
                 Message * m = popUserList();
+                
+                int currY, currX;
+                getyx(stdscr, currY, currX);
+
+                // switch to output
+                move(currentOutputY, currentFieldX);
+
                 while(m != NULL){
-                    display_messages(m);
+                    printw("%s: %s\n", m->source, m->data );
                     m = popUserList();
                 }
+                // check for logouts
+                if(forceLogout && loged_in){
+                    loged_in = false;
+                    pthread_kill(receiver_thread, SIG_ABRT);
+                    close(sockfd);
+                    
+                    printw("Forced Logout!\n");
+                    // put back cursor
+                    getyx(stdscr, currentOutputY, currentOutputX);
+                    move(currY, currX);
+                    continue;
+                }
+                // put back cursor
+                getyx(stdscr, currentOutputY, currentOutputX);
+                move(currY, currX);
+                
             }
             else if(ch == KEY_BACKSPACE || ch == 127 || ch == '\b' || ch == 7){
                 
@@ -260,13 +294,6 @@ int main()
         printw("\n==================Messages==================\n");
         move(currentOutputY, currentOutputX);
         
-        if(forceLogout && loged_in){
-            loged_in = false;
-            pthread_kill(receiver_thread, SIG_ABRT);
-            close(sockfd);
-            printw("Forced Logout!\n");
-            continue;
-        }
         char * word_array= (char *)malloc(len +1);
         strncpy(word_array , command, len);
         char * word = strtok(word_array, " ");
@@ -314,20 +341,16 @@ int main()
                         }
                         // handle later
                     } 
-                    else if(strcmp(word , "/leavesession\n") == 0){
+                    else if(strcmp(word , "/leavesession") == 0){
                         c = Leave;
                         
                         if(!loged_in){
                             printw("Not Logged in.\n");
                             break;
                         }
-                        // send packets
-                        text_message_from_source(sockfd, LEAVE_SESS, "", username);
                         
-                        // handle
-                        printw("left current session\n");
-                        // next command
-                        break;
+                        // handle later
+                        
                     } 
                     else if(strcmp(word , "/createsession") == 0){
                         c = Create;
@@ -399,24 +422,23 @@ int main()
                     }
                     else if (c == Join){
                         if(word_count == 1){
-                        // join with sess id word
-                        // send/receive packets
-                        if(word[strlen(word) -1] == '\n')
-                            word[strlen(word) -1] = '\0';
-                        text_message_from_source(sockfd, JOIN, word, username);
-                        
-                        Message * received = popControlList();
-                        if (received->type == JN_ACK) {
-                            printw ("Joined session: %s\n", word);
-                        } 
-                        else if (received->type == JN_NAK) {
-                            if(strcmp(received->data, "leave_first") == 0)
-                                printw ("Join failed: Leave current session first\n");
-                            else
-                                printw ("Join failed: session %s does not exist\n", word);
-                        }
-                        }
-                        else {
+                            // join with sess id word
+                            // send/receive packets
+                            if(word[strlen(word) -1] == '\n')
+                                word[strlen(word) -1] = '\0';
+                            text_message_from_source(sockfd, JOIN, word, username);
+
+                            Message * received = popControlList();
+                            if (received->type == JN_ACK) {
+                                printw ("Joined session: %s\n", word);
+                            } 
+                            else if (received->type == JN_NAK) {
+                                if(strcmp(received->data, "already_joined") == 0)
+                                    printw ("Join failed: Session already joined\n");
+                                else
+                                    printw ("Join failed: session %s does not exist\n", word);
+                            }
+                        }else {
                             printw("Invalid Arguments\n");
                         }
                     }
@@ -440,6 +462,27 @@ int main()
                             // create with sess id word
                         }
                         else {
+                            printw("Invalid Arguments\n");
+                        }
+                    }
+                    else if (c == Leave) {
+                        // send packets
+                        if(word_count == 1){
+                            // Session ID
+                            // send/receive packets
+                            if(word[strlen(word) -1] == '\n')
+                                word[strlen(word) -1] = '\0';
+                            text_message_from_source(sockfd, LEAVE_SESS, word, username);
+                            
+                            Message * received = popControlList();
+                            if(received->type == LEAVE_ACK)
+                                printw("Left %s session\n", word);
+                            else if(received->type == LEAVE_NAK)
+                                printw("Invalid Leave Request\n");
+                            
+                        }
+                        else
+                        {
                             printw("Invalid Arguments\n");
                         }
                     }
@@ -512,6 +555,7 @@ int main()
             // wait for lo_ack or lo_nack
 
             Message * received;
+            // Ignore exits as not logged in anyway
             do{
                 received = popControlList();
             }while(received->type == EXIT);

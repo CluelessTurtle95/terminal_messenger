@@ -24,6 +24,8 @@ typedef enum MessageType {
     JN_ACK ,
     JN_NAK,
     LEAVE_SESS ,
+    LEAVE_NAK ,
+    LEAVE_ACK ,
     NEW_SESS ,
     NS_ACK ,
     NS_NACK ,

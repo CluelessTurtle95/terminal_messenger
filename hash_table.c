@@ -145,6 +145,7 @@ void print_list(CollisionList* list){
 char * user_list_to_string(UserList * l){
     char * buf = (char *)malloc(MAX);
     char * buf_tot = (char *)malloc(MAX);
+    strcpy(buf_tot, "");
     _Bool first = true;
     while(l != NULL){
         if(l->next != NULL)

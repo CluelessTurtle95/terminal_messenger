@@ -14,10 +14,16 @@
 #ifndef HASH_TABLE_H
 #define HASH_TABLE_H
 
+
+typedef struct SessionList{
+    char sessid[20];
+    struct SessionList * next;
+} SessionList;
+
 typedef struct UserData {
     int connfd;
     pthread_t p;
-    char sessid[20];
+    SessionList * sessions;
     char * username;
 } UserData;
 

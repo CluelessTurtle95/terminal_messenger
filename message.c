@@ -14,7 +14,7 @@
 char * packet_to_string(Message * p){
     char * result = (char *)malloc(strlen(p->source) +  strlen(p->data) + 20);
     
-    char * temp = (char *)malloc(strlen(p->source) +  strlen(p->data));
+    char * temp = (char *)malloc(strlen(p->source) +  strlen(p->data) + 1 );
     strcpy(temp, p->source);
     strcat(temp, p->data);
     
