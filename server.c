@@ -277,7 +277,7 @@ void handleUserRequests( UserData * data){
             while(temp != NULL){
                 // Modify message to reflect session
                 char * username_session = (char *)malloc(MAX);
-                sprintf(username_session, "%s#%s", data->username, temp->sessid);
+                sprintf(username_session, "%s %s", data->username, temp->sessid);
                 
                 // Send
                 multicast(m, username_session, temp->sessid);

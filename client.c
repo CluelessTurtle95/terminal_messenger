@@ -26,6 +26,8 @@ typedef enum Command {
     Leave,
     Create,
     List,
+    View,
+    Invite,
     Quit
 } Command;
 
@@ -44,6 +46,54 @@ pthread_cond_t conrolCond = PTHREAD_COND_INITIALIZER;
 int currentOutputX = 0, currentOutputY = 0;
 int currentFieldX = 0, currentFieldY = 0;
 
+typedef struct WindowData {
+    WINDOW * win;
+} WindowData;
+
+HashTable * windowDB = NULL;
+WindowData * sysWinData = NULL;
+
+
+char current_sess[20];
+
+
+void system_print(char * str, ...){
+//    char * buf = (char *)malloc(MAX);
+    
+//    int y,x;
+//    getyx(sysWinData->win, y,x);
+//    wmove(sysWinData->win,0,0);
+//    winstr(sysWinData->win, buf);
+//    wprintw(sysWinData->win, "                    \n          \n             \n                ");
+//    wmove(sysWinData->win,0,0);
+//    wrefresh(sysWinData->win);
+//    
+//    wprintw(sysWinData->win, buf);
+    va_list args;
+    va_start(args, str);
+    vw_printw(sysWinData->win, str, args);
+    va_end(args);
+    wrefresh(sysWinData->win);
+    
+    overwrite(sysWinData->win, stdscr);
+    
+    strcpy(current_sess, "System");
+    
+}
+
+void session_print(char * user_sess, char * msg){
+    char * user = (char *)malloc(MAX);
+    char * session = (char *)malloc(MAX);
+    sscanf(user_sess, "%s %s", user, session);
+    WindowData * wd = find_item(session, windowDB);
+    if(wd != NULL)
+        wprintw(wd->win, "%s: %s\n", user, msg);
+    else
+        system_print("User Sess : %s Sess: %s", user_sess, session);
+    
+    free(user);
+    free(session);
+}
 
 
 void addToMsgList(Message *m , MessageList *l){
@@ -94,9 +144,6 @@ void freeMsgList(MessageList *l){
     MessageList * head = l->next;
     while(head != NULL){
         MessageList * temp = head->next;
-        if(head->m->type == MESSAGE){
-            //printw("Backlog Message| From: %8s Data: %s\n", head->m->source, head->m->data);
-        }
         free(head->m);
         free(head);
         head = temp;
@@ -116,25 +163,6 @@ void message_receiver_terminate_handler(int sig){
     // reset
     controlList->next = NULL;
     userMessages->next = NULL;
-}
-
-void display_messages(Message * received){
-    int currY, currX;
-    getyx(stdscr, currY, currX);
-
-    if(currY == 0){
-        // field
-        move(currentOutputY, currentFieldX);
-
-        printw("%s: %s\n", received->source, received->data );
-
-        getyx(stdscr, currentOutputY, currentOutputX);
-
-        move(currY, currX);
-    }
-    else{
-        printw("Wrong Time!");
-    }
 }
 
 void * message_receiver(void * sockfd_ptr){
@@ -168,7 +196,8 @@ void * message_receiver(void * sockfd_ptr){
 
                 // switch to output
                 move(currentOutputY, currentFieldX);
-                printw("Server Exited!\n");
+                system_print( "Server Exited!\n");
+                
                 getyx(stdscr, currentOutputY, currentOutputX);
                 // switch back
                 move(currY, currX);
@@ -186,9 +215,9 @@ void * message_receiver(void * sockfd_ptr){
     return sockfd_ptr;
 }
 
-
 int main() 
 {
+    strcpy(current_sess, "System");
     
     initscr();
     cbreak();
@@ -217,6 +246,12 @@ int main()
     char * username = NULL;
     
     
+    // Init windowDB
+    windowDB = hash_table_init(10);
+    sysWinData = (WindowData *)malloc(sizeof(WindowData));
+    sysWinData->win = newwin(20, 40, 2, 0);
+    insert_item("System", (void *)sysWinData, windowDB);
+    
     while(!quit){
         
         Command c;
@@ -226,7 +261,10 @@ int main()
         getyx(stdscr, currentOutputY, currentOutputX);
         if(currentOutputY == 0)
             currentOutputY = 2;
+        move(1,0);
+        printw("==================Messages(%s)==================", current_sess);
         move(0, 0);
+        // TODO:get window size
         printw(">                                                                                                   ");
         move(0,1);
         
@@ -244,7 +282,8 @@ int main()
                 move(currentOutputY, currentFieldX);
 
                 while(m != NULL){
-                    printw("%s: %s\n", m->source, m->data );
+                    session_print(m->source, m->data);
+//                    printw("%s: %s\n", m->source, m->data );
                     m = popUserList();
                 }
                 // check for logouts
@@ -253,7 +292,7 @@ int main()
                     pthread_kill(receiver_thread, SIG_ABRT);
                     close(sockfd);
                     
-                    printw("Forced Logout!\n");
+                    system_print("Forced Logout!\n");
                     // put back cursor
                     getyx(stdscr, currentOutputY, currentOutputX);
                     move(currY, currX);
@@ -289,9 +328,6 @@ int main()
             command[i] = '\n';
             command[i+1] = '\0';
         }
-//        getline(&command, &len, stdin);
-//        printw("\nReceived : %s\n" , command);
-        printw("\n==================Messages==================\n");
         move(currentOutputY, currentOutputX);
         
         char * word_array= (char *)malloc(len +1);
@@ -319,7 +355,7 @@ int main()
                         c = Logout;
                         
                         if(!loged_in){
-                            printw("Not Logged in.\n");
+                            system_print("Not Logged in.\n");
                             break;
                         }
                         // handle
@@ -336,7 +372,7 @@ int main()
                         c = Join;
                         
                         if(!loged_in){
-                            printw("Not Logged in.\n");
+                            system_print("Not Logged in.\n");
                             break;
                         }
                         // handle later
@@ -345,7 +381,7 @@ int main()
                         c = Leave;
                         
                         if(!loged_in){
-                            printw("Not Logged in.\n");
+                            system_print("Not Logged in.\n");
                             break;
                         }
                         
@@ -356,7 +392,7 @@ int main()
                         c = Create;
                         
                         if(!loged_in){
-                            printw("Not Logged in.\n");
+                            system_print("Not Logged in.\n");
                             break;
                         }
                         // handle later
@@ -365,7 +401,7 @@ int main()
                         c = List;
                         
                         if(!loged_in){
-                            printw("Not Logged in.\n");
+                            system_print("Not Logged in.\n");
                             break;
                         }
 
@@ -373,7 +409,7 @@ int main()
                         
                         Message * received = popControlList();
                         if (received->type == QU_ACK) { 
-                            printw("Currently Active Sessions:\n%s", received->data);
+                            system_print("Currently Active Sessions:\n%s", received->data);
                         } 
                         break;
                     } 
@@ -392,8 +428,26 @@ int main()
                         // next command
                         break;
                     } 
+                    else if(strcmp(word, "/view") == 0){
+                        c = View;
+                        
+                        if(!loged_in){
+                            system_print("Not Logged in.\n");
+                            break;
+                        }
+                        // handle later
+                    }
+                    else if(strcmp(word, "/invite") == 0){
+                        c = Invite;
+                        
+                        if(!loged_in){
+                            system_print("Not Logged in.\n");
+                            break;
+                        }
+                        // handle later
+                    }
                     else {
-                        printw("Invalid Command!\n");
+                        system_print("Invalid Command!\n");
                         break;
                     }
                 }
@@ -407,7 +461,7 @@ int main()
                 // Not first word
                 if(text){
                     // 
-                    printw("ERROR!");
+                    system_print("ERROR!");
                     exit(0);
                 }
                 else{
@@ -417,7 +471,7 @@ int main()
                             login_args[word_count -1] = (char *)malloc(50);
                             strcpy(login_args[word_count -1] , word);
                         }else{
-                            printw("Invalid Arguments\n");
+                            system_print("Invalid Arguments\n");
                         }
                     }
                     else if (c == Join){
@@ -430,16 +484,23 @@ int main()
 
                             Message * received = popControlList();
                             if (received->type == JN_ACK) {
-                                printw ("Joined session: %s\n", word);
+                                system_print("Joined session: %s\n", word);
+                                
+                                // make a window
+                                WINDOW * w = newwin(20, 40, 2, 0);
+                                WindowData * winData = (WindowData *)malloc(sizeof(WindowData));
+                                winData->win = w;
+                                
+                                insert_item(word, (void *)winData, windowDB);
                             } 
                             else if (received->type == JN_NAK) {
                                 if(strcmp(received->data, "already_joined") == 0)
-                                    printw ("Join failed: Session already joined\n");
+                                    system_print("Join failed: Session already joined\n");
                                 else
-                                    printw ("Join failed: session %s does not exist\n", word);
+                                    system_print("Join failed: session %s does not exist\n", word);
                             }
                         }else {
-                            printw("Invalid Arguments\n");
+                            system_print("Invalid Arguments\n");
                         }
                     }
                     else if (c == Create) {
@@ -453,16 +514,16 @@ int main()
          
                             Message * received = popControlList();
                             if (received->type == NS_ACK) { 
-                                printw ("new session created\n");
-                                printw ("session ID: %s\n", word);
+                                system_print("new session created\n");
+                                system_print("session ID: %s\n", word);
                             } 
                             else if (received->type == NS_NACK) { 
-                                printw ("session already exists\n");
+                                system_print("session already exists\n");
                             } 
                             // create with sess id word
                         }
                         else {
-                            printw("Invalid Arguments\n");
+                            system_print("Invalid Arguments\n");
                         }
                     }
                     else if (c == Leave) {
@@ -475,19 +536,56 @@ int main()
                             text_message_from_source(sockfd, LEAVE_SESS, word, username);
                             
                             Message * received = popControlList();
-                            if(received->type == LEAVE_ACK)
-                                printw("Left %s session\n", word);
+                            if(received->type == LEAVE_ACK){
+                                system_print("Left %s session\n", word);
+                                
+                                WindowData * wd = find_item(word, windowDB);
+                                delwin(wd->win);
+                                remove_item(word, windowDB);
+                                
+                            }
                             else if(received->type == LEAVE_NAK)
-                                printw("Invalid Leave Request\n");
+                                system_print("Invalid Leave Request\n");
                             
                         }
                         else
                         {
-                            printw("Invalid Arguments\n");
+                            system_print("Invalid Arguments\n");
+                        }
+                    }
+                    else if (c == View){
+                        if(word_count == 1){
+                            if(word[strlen(word) -1] == '\n')
+                                word[strlen(word) -1] = '\0';
+                            WindowData * wd = find_item(word, windowDB);
+                            if(wd != NULL){
+                                // found
+                                overwrite(wd->win, stdscr);
+                                strcpy(current_sess, word);
+                            }
+                            else {
+                                system_print( "Invalid Session\n");
+                            }
+                        }
+                        else
+                        {
+                            system_print("Invalid Arguments\n");
+                        }
+                    }
+                    else if(c == Invite){
+                        // TODO
+                        if(word_count == 1){
+                            if(word[strlen(word) -1] == '\n')
+                                word[strlen(word) -1] = '\0';
+                            
+                        }
+                        else
+                        {
+                            system_print("Invalid Arguments\n");
                         }
                     }
                     else {
-                        printw("Invalid Arguments\n");
+                        system_print("Invalid Arguments\n");
                     }
                 }
             }
@@ -506,28 +604,28 @@ int main()
                 text_message_from_source(sockfd, MESSAGE, command, username);
          
             }else {
-                printw("Login first!\n");
+                system_print("Login first!\n");
                 break;
             }
         }
         else if(c == Login){
             if(loged_in){
-                printw("Logout first!\n");
+                system_print("Logout first!\n");
                 continue;
             }
                 
             if(word_count != 5){
-                printw("Invalid Arguments!\n");
+                system_print("Invalid Arguments!\n");
                 continue;
             }
             // socket create and varification 
             sockfd = socket(AF_INET, SOCK_STREAM, 0); 
             if (sockfd == -1) { 
-                    printw("Socket Creation Failed!\n"); 
+                    system_print("Socket Creation Failed!\n"); 
                     continue;
             } 
             else
-                    printw("Socket successfully created\n"); 
+                    system_print("Socket successfully created\n"); 
 
             pthread_create(&receiver_thread, NULL, message_receiver, &sockfd);
             bzero(&servaddr, sizeof(servaddr)); 
@@ -539,7 +637,7 @@ int main()
 
             // connect the client socket to server socket 
             if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) != 0) { 
-                printw("Server Connection Failed!\n"); 
+                system_print("Server Connection Failed!\n"); 
                 close(sockfd);
 
                 pthread_kill(receiver_thread, SIG_ABRT);
@@ -547,7 +645,7 @@ int main()
             } 
             else{
                 forceLogout = false;
-                printw("Connected!\n"); 
+                system_print("Connected!\n"); 
             }
             // send/receive packets
             text_message_from_source(sockfd, LOGIN, login_args[1], login_args[0]);
@@ -569,7 +667,7 @@ int main()
             } 
             else if(received->type == LO_NAK){
                 loged_in = false;
-                printw ("login failed, try again\n");
+                system_print("login failed, try again\n");
                 continue;
             }
         } 
@@ -584,7 +682,3 @@ int main()
     
     endwin();
 } 
-
-
-
-
