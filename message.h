@@ -15,6 +15,7 @@
 #define MESSAGE_H
 
 typedef enum MessageType {
+    INVALID = -1,
     LOGIN ,
     LO_ACK ,
     LO_NAK ,
@@ -31,7 +32,10 @@ typedef enum MessageType {
     NS_NACK ,
     MESSAGE ,
     QUERY ,
-    QU_ACK
+    QU_ACK,
+    INVITE,
+    IN_ACK,
+    IN_NAK
 } MessageType;
 
 typedef struct Message {

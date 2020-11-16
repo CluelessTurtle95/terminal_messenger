@@ -20,6 +20,7 @@
 
 
 typedef enum Command {
+    Invalid,
     Login, 
     Logout,
     Join,
@@ -58,17 +59,6 @@ char current_sess[20];
 
 
 void system_print(char * str, ...){
-//    char * buf = (char *)malloc(MAX);
-    
-//    int y,x;
-//    getyx(sysWinData->win, y,x);
-//    wmove(sysWinData->win,0,0);
-//    winstr(sysWinData->win, buf);
-//    wprintw(sysWinData->win, "                    \n          \n             \n                ");
-//    wmove(sysWinData->win,0,0);
-//    wrefresh(sysWinData->win);
-//    
-//    wprintw(sysWinData->win, buf);
     va_list args;
     va_start(args, str);
     vw_printw(sysWinData->win, str, args);
@@ -81,6 +71,21 @@ void system_print(char * str, ...){
     
 }
 
+SessionList * unread = NULL;
+
+void print_unread(){
+    SessionList * head = unread;
+    SessionList * prev = NULL;
+    // add at the end to check list
+    while(head != NULL){
+        printw("%s ", head->sessid);
+        
+        prev = head;
+        head = head->next;
+
+    }
+}
+
 void session_print(char * user_sess, char * msg){
     char * user = (char *)malloc(MAX);
     char * session = (char *)malloc(MAX);
@@ -91,6 +96,38 @@ void session_print(char * user_sess, char * msg){
     else
         system_print("User Sess : %s Sess: %s", user_sess, session);
     
+    if(strcmp(session, current_sess) == 0){
+        wrefresh(wd->win);
+    } else {
+        // add sess to unread
+        SessionList * temp = (SessionList *)malloc(sizeof(SessionList));
+        temp->next = NULL;
+        strcpy(temp->sessid, session);
+        SessionList * head = unread;
+        SessionList * prev = NULL;
+        // add at the end to check list
+        _Bool already_unread = false;
+        while(head != NULL){
+            if(strcmp(head->sessid, session) == 0){
+                // already unread, dont add
+                already_unread = true;
+                break;
+            }
+
+            prev = head;
+            head = head->next;
+
+        }
+        if(!already_unread){
+            if(prev == NULL){
+                // first element
+                unread = temp;
+            }
+            else{
+                prev->next = temp;
+            }
+        }
+    }
     free(user);
     free(session);
 }
@@ -122,6 +159,7 @@ Message * popControlList(){
 
     return res;
 }
+
 Message * popUserList(){
     
     pthread_mutex_lock(&userMutex);
@@ -179,11 +217,10 @@ void * message_receiver(void * sockfd_ptr){
         if(ret <= 0)
             continue;
         struct Message* received = string_to_packet(buff);
-        if (received->type == MESSAGE) { 
+        if ( (received->type == MESSAGE) || (received->type == INVITE) || (received->type == IN_ACK) || (received->type == IN_NAK) ){ 
             pthread_mutex_lock(&userMutex);
             
             addToMsgList(received, userMessages);
-            
             
             pthread_mutex_unlock(&userMutex);
         }else{
@@ -215,8 +252,29 @@ void * message_receiver(void * sockfd_ptr){
     return sockfd_ptr;
 }
 
-int main() 
-{
+void request_join(int server_sock, char * sessid, char * username){
+    text_message_from_source(server_sock, JOIN, sessid, username);
+
+    Message * received = popControlList();
+    if (received->type == JN_ACK) {
+        system_print("Joined session: %s\n", sessid);
+
+        // make a window
+        WINDOW * w = newwin(20, 40, 4, 0);
+        WindowData * winData = (WindowData *)malloc(sizeof(WindowData));
+        winData->win = w;
+
+        insert_item(sessid, (void *)winData, windowDB);
+    } 
+    else if (received->type == JN_NAK) {
+        if(strcmp(received->data, "already_joined") == 0)
+            system_print("Join failed: Session already joined\n");
+        else
+            system_print("Join failed: session %s does not exist\n", sessid);
+    }
+}
+
+void global_setup(){
     strcpy(current_sess, "System");
     
     initscr();
@@ -235,6 +293,11 @@ int main()
     controlList->next = NULL;
     userMessages->m = NULL;
     userMessages->next = NULL;
+}
+
+int main() 
+{
+    global_setup();
     
     int sockfd, connfd; 
     struct sockaddr_in servaddr; 
@@ -249,19 +312,27 @@ int main()
     // Init windowDB
     windowDB = hash_table_init(10);
     sysWinData = (WindowData *)malloc(sizeof(WindowData));
-    sysWinData->win = newwin(20, 40, 2, 0);
+    sysWinData->win = newwin(20, 40, 4, 0);
     insert_item("System", (void *)sysWinData, windowDB);
     
     while(!quit){
         
-        Command c;
+        Command c = Invalid;
         char * command = (char *)malloc(50);
         char  * login_args [4];
         size_t len = 50;
         getyx(stdscr, currentOutputY, currentOutputX);
         if(currentOutputY == 0)
-            currentOutputY = 2;
+            currentOutputY = 4;
         move(1,0);
+        printw("==================Unread==================");
+        for(int ii = 0 ; ii< 4 + strlen(current_sess) ; ii++)
+            printw("=");
+        printw("\n");
+        printw("                                               ");
+        move(2,0);
+        print_unread();
+        move(3, 0);
         printw("==================Messages(%s)==================", current_sess);
         move(0, 0);
         // TODO:get window size
@@ -282,7 +353,68 @@ int main()
                 move(currentOutputY, currentFieldX);
 
                 while(m != NULL){
-                    session_print(m->source, m->data);
+                    if(m->type == MESSAGE){
+                        session_print(m->source, m->data);
+                        int y,x;
+                        getyx(stdscr, y, x);
+                        move(2,0);
+                        printw("                                               ");
+                        move(2,0);
+                        print_unread();
+                        move(y,x);
+                    }else if(m->type == INVITE){
+                        // Another user has invited you
+                        // wait for user input
+                        
+                        // switch to system
+                        if(strcmp(current_sess, "System") != 0){
+                            overwrite(sysWinData->win, stdscr);
+                            strcpy(current_sess, "System");
+                            int y,x;
+                            getyx(stdscr, y, x);
+                            move(3,0);
+                            printw("==================Messages(%s)==================", current_sess);
+                            move(1,0);
+                            printw("==================Unread==================");
+                            for(int ii = 0 ; ii < 4 + strlen(current_sess) ; ii++)
+                                printw("=");
+                            move(y,x);
+                        }
+                        
+                        system_print("User %s has invited you to %s\n", m->source, m->data);
+                        system_print("Accept Invitation?(y/n):");
+                        
+                        char ch = wgetch(sysWinData->win);
+                        // wait for y/n ERR will spin too
+                        while( !(ch == 'y' || ch == 'n') ){
+                            ch = wgetch(sysWinData->win);
+                        }
+                        
+                        if(ch == 'y'){
+                            system_print("y\n");
+                            text_message_from_source(sockfd, IN_ACK, m->source, m->data);
+                            
+                            request_join(sockfd, m->data, username);
+                            
+                        } else{
+                            system_print("n\n");
+                            text_message_from_source(sockfd, IN_NAK, m->source, m->data);
+                        }
+                            
+                    }
+                    else if(m->type == IN_ACK){
+                        system_print("User %s Accepted your invitation to %s\n", m->source, m->data);
+                    }
+                    else if(m->type == IN_NAK){
+                        if(strcmp(m->data, "") == 0){
+                            // received empty NAK , user in source
+                            system_print("Invited User %s doesnt exist\n", m->source);
+                        }
+                        else {
+                            // refused
+                            system_print("Invited User %s refused your invitation to %s\n", m->source, m->data);
+                        }
+                    }
 //                    printw("%s: %s\n", m->source, m->data );
                     m = popUserList();
                 }
@@ -333,7 +465,9 @@ int main()
         char * word_array= (char *)malloc(len +1);
         strncpy(word_array , command, len);
         char * word = strtok(word_array, " ");
-
+        
+        char invite_user[20];
+        
         int word_count = 0;
         _Bool text = false; // Assume Command
         while (word != NULL)
@@ -480,25 +614,9 @@ int main()
                             // send/receive packets
                             if(word[strlen(word) -1] == '\n')
                                 word[strlen(word) -1] = '\0';
-                            text_message_from_source(sockfd, JOIN, word, username);
-
-                            Message * received = popControlList();
-                            if (received->type == JN_ACK) {
-                                system_print("Joined session: %s\n", word);
-                                
-                                // make a window
-                                WINDOW * w = newwin(20, 40, 2, 0);
-                                WindowData * winData = (WindowData *)malloc(sizeof(WindowData));
-                                winData->win = w;
-                                
-                                insert_item(word, (void *)winData, windowDB);
-                            } 
-                            else if (received->type == JN_NAK) {
-                                if(strcmp(received->data, "already_joined") == 0)
-                                    system_print("Join failed: Session already joined\n");
-                                else
-                                    system_print("Join failed: session %s does not exist\n", word);
-                            }
+                            
+                            request_join(sockfd, word, username);
+                            
                         }else {
                             system_print("Invalid Arguments\n");
                         }
@@ -558,14 +676,54 @@ int main()
                             if(word[strlen(word) -1] == '\n')
                                 word[strlen(word) -1] = '\0';
                             WindowData * wd = find_item(word, windowDB);
+                            
                             if(wd != NULL){
                                 // found
+                                
+                                // remove from unread
+                                if(unread != NULL){
+                                    SessionList * head = unread;
+                                    SessionList * prev = NULL;
+
+                                    while(head != NULL){
+                                        if(strcmp(head->sessid, word) == 0){
+                                            // found session , valid
+                                            break;
+                                        }
+                                        prev = head;
+                                        head = head->next;
+                                    }
+                                    
+                                    
+                                    if(head != NULL){
+                                        // if found
+                                        // remove from unread
+                                        if(prev != NULL)
+                                            prev->next = head->next;
+                                        else
+                                            unread = head->next;
+                                        free(head);
+                                        
+                                        
+                                    }
+                                    else{
+                                        
+                                    }
+                                    
+                                }
+                                
                                 overwrite(wd->win, stdscr);
                                 strcpy(current_sess, word);
+                                
+
                             }
                             else {
                                 system_print( "Invalid Session\n");
                             }
+                            move(2,0);
+                            printw("                                               ");
+                            move(2,0);
+                            print_unread();
                         }
                         else
                         {
@@ -574,14 +732,23 @@ int main()
                     }
                     else if(c == Invite){
                         // TODO
-                        if(word_count == 1){
+                        if(word_count == 2){
                             if(word[strlen(word) -1] == '\n')
                                 word[strlen(word) -1] = '\0';
                             
+                            // /invite user session
+                            // user : data
+                            // session : source
+                            text_message_from_source(sockfd, INVITE, invite_user, word);
+                            
                         }
-                        else
-                        {
-                            system_print("Invalid Arguments\n");
+                        if(word_count == 1){
+                            if(word[strlen(word) -1] == '\n'){
+                                system_print("Invalid Arguments1\n");
+                            }
+                            else{
+                                strcpy(invite_user, word);
+                            }
                         }
                     }
                     else {

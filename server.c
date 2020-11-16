@@ -35,21 +35,47 @@ HashTable * sessionDB = NULL;
 pthread_mutex_t loginDBMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t sessionDBMutex = PTHREAD_MUTEX_INITIALIZER;
 
+int main_sockfd;
+
+int msleep(long msec)
+{
+    struct timespec ts;
+    int res;
+
+    ts.tv_sec = msec / 1000;
+    ts.tv_nsec = (msec % 1000) * 1000000;
+
+    res = nanosleep(&ts, &ts);
+    
+    return res;
+}
+
 void exit_server_handler(int sig){
     // Send exit to all logged in
+    
+    // kill all threads
     
     printf("Forced Shutdown!\nExit sent to : \n");
     for(int i = 0 ; i < loginDB->size; i++){
         if(loginDB->lists[i] != NULL){
             CollisionList * temp = loginDB->lists[i];
             while(temp != NULL){
-                int sockfd = ((UserData *)temp->element->data)->connfd;
+                UserData * ud = (UserData *)temp->element->data;
+                int sockfd = ud->connfd;
                 empty_message(sockfd, EXIT);
                 printf("%s\n", temp->element->key);
+                
+                pthread_kill(ud->p, SIGTERM);
+                
+                close(sockfd);
+                
                 temp = temp->next;
             }
         }
     }
+    
+    // close main socket
+    close(main_sockfd);
     
     exit(0);
 }
@@ -64,6 +90,7 @@ int main(int argc, char *argv[])
     // Making the socket
     // IPv4, TCP, Any protocol(ip?)
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    main_sockfd = sockfd;
     // Checking if socket allocation succeded
     if ( sockfd < 0 ) { 
         printf("socket creation failed"); 
@@ -94,30 +121,26 @@ int main(int argc, char *argv[])
     sessionDB = hash_table_init(10);
     
     signal(SIGINT, exit_server_handler);
-    signal(SIGTERM, exit_server_handler);
-    signal(SIGABRT, exit_server_handler);
     
-    
-    // start listening
     while(true)
     {    
-        // Now server is ready to listen and verification 
+        // server ready to listen 
         if ((listen(sockfd, 5)) != 0) { 
-                printf("Listen failed...\n"); 
+                printf("Listen failed\n"); 
                 exit(0); 
         } 
         else
-                printf("Server listening..\n"); 
+                printf("Server listening\n"); 
         int len = sizeof(clientAddr); 
 
         // Accept the data packet from client and verification 
         int connfd = accept(sockfd, ( struct sockaddr *)&clientAddr, &len); 
         if (connfd < 0) { 
-                printf("server acccept failed...\n"); 
+                printf("acccept failed\n"); 
                 exit(0); 
         } 
         else
-                printf("server acccept the client...\n"); 
+                printf("client accepted\n"); 
         
         UserData * data = (UserData *)malloc(sizeof(UserData));
         data->connfd = connfd;
@@ -130,7 +153,7 @@ int main(int argc, char *argv[])
         
         
     }
-    // After chatting close the socket 
+    //close the socket 
     close(sockfd); 
 } 
 
@@ -203,7 +226,7 @@ void multicast(Message * m, char * source, char * sessid){
     SessionData * sessData = find_item(sessid, sessionDB);
     UserList * head = sessData->connected_users;
     while(head != NULL){
-        pthread_mutex_unlock(&loginDBMutex);
+        pthread_mutex_lock(&loginDBMutex);
         int temp_sock = ((UserData *)find_item(head->username, loginDB))->connfd;
         pthread_mutex_unlock(&loginDBMutex);
 
@@ -272,19 +295,87 @@ void handleUserRequests( UserData * data){
         }
         else if (m->type == MESSAGE){
             printf("User %s Sent : %s\n", data->username, m->data);
-            
+            printf("Sending to sessions : ");
             SessionList * temp = data->sessions;
             while(temp != NULL){
                 // Modify message to reflect session
                 char * username_session = (char *)malloc(MAX);
                 sprintf(username_session, "%s %s", data->username, temp->sessid);
-                
+                printf("%s ", temp->sessid);
                 // Send
+//                sleep(1);
+                msleep(100);
                 multicast(m, username_session, temp->sessid);
                 temp = temp->next;
                 free(username_session);
             }
-        } 
+        }
+        else if (m->type == INVITE){
+            pthread_mutex_lock(&loginDBMutex);
+            UserData * receiver = find_item(m->data, loginDB);
+            
+            if(receiver != NULL){
+                // using source as sessid coz im lazy
+                text_message_from_source(receiver->connfd, INVITE, m->source, data->username);
+                
+            }
+            else{
+                // invalid user
+                text_message_from_source(data->connfd, IN_NAK, "", m->data);
+            }
+            pthread_mutex_unlock(&loginDBMutex);
+        }
+        else if(m->type == IN_ACK){
+            // another user has accepted the invite
+            // later : check is invite was valid
+            
+            // data : inviting username
+            // source : invited session
+            
+//            printf("Accept inviter: %s accepter: %s Sess: %s\n", m->data, data->username, m->source);
+            
+            pthread_mutex_lock(&loginDBMutex);
+            UserData * inviter = (UserData *)find_item(m->data, loginDB);
+            
+            if(inviter != NULL){
+                // using source as sessid coz im lazy
+//                printf("Relayed Accpet\n");
+                text_message_from_source(inviter->connfd, IN_ACK, m->source, data->username);
+                
+            }
+            else{
+                // invalid user
+//                printf("inviter null\n");
+                // user has logged out
+                // no action
+            }
+            pthread_mutex_unlock(&loginDBMutex);
+            
+        }
+        else if(m->type == IN_NAK){
+            // user declined
+            // later : check is invite was valid
+            
+            // data : inviting username
+            // source : invited session
+//            printf("Decline inviter: %s accepter: %s Sess: %s\n", m->data, data->username, m->source);
+            pthread_mutex_lock(&loginDBMutex);
+            UserData * inviter = find_item(m->data, loginDB);
+            
+            if(inviter != NULL){
+                // using source as sessid coz im lazy
+//                printf("Relayed Decline\n");
+                text_message_from_source(inviter->connfd, IN_NAK, m->source, data->username);
+                
+            }
+            else{
+                // invalid user
+                
+                // user has logged out
+                // no action
+            }
+            pthread_mutex_unlock(&loginDBMutex);
+        }
         else if(m->type == LOGIN){
             printf("Double Login attempt!\n");
             empty_message(data->connfd, LO_NAK);
